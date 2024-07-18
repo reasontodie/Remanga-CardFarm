@@ -277,11 +277,11 @@ class ReManga:
                 data = json.load(file)
                 self.page = data.get('page')
                 self.token = data.get('token')
-                self.viewed = data.get('viewed')
                 self.headers = data.get('headers')
                 self.username = data.get('username')
                 self.password = data.get('password')
                 self.user_info = data.get('user_info')
+                self.viewed_chapters = data.get('viewed')
                 return True
 
     async def __save_viewed(self):
