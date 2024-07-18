@@ -1,0 +1,7 @@
+certifi==2024.7.4
+cffi==1.16.0
+colorama==0.4.6
+curl_cffi==0.7.1
+loguru==0.7.2
+pycparser==2.22
+win32-setctime==1.1.0
