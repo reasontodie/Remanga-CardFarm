@@ -16,7 +16,9 @@ async def main():
             username, password, token = data if len(data) == 3 else (data[0], data[1], None)
         else:
             username, password, token = None, None, data[0]
-        tasks.append(ReManga(username=username, password=password, token=token).time_to_fun())
+        tasks.append(
+            ReManga(username=username, password=password, token=token, auto_craft='rank_f').time_to_fun()
+        )
 
     await asyncio.gather(*tasks)
 
