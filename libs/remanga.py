@@ -18,12 +18,14 @@ class ReManga:
     BASE_URL: str = 'https://api.remanga.org/api'
     BASE_PATHS: dict = {
         'login': '/users/login/',
-        'current': '/v2/users/current',
-        'count_bookmarks': '/users/{}/user_bookmarks',
-        'bookmarks': '/users/{}/bookmarks',
+        'views': '/activity/views/',
+        'inventory': '/inventory/{}',
         'catalog': '/search/catalog',
         'chapters': '/titles/chapters',
-        'views': '/activity/views/'
+        'current': '/v2/users/current',
+        'bookmarks': '/users/{}/bookmarks',
+        'merge_cards': '/inventory/{}/cards/merge/',
+        'count_bookmarks': '/users/{}/user_bookmarks',
     }
 
     SITE_URL: str = 'https://remanga.org'
@@ -40,11 +42,13 @@ class ReManga:
     def __init__(self,
                  username: str = None,
                  password: str = None,
-                 token: str = None):
+                 token: str = None,
+                 auto_craft: str = None):
 
         self.username = username
         self.password = password
         self.token = token
+        self.auto_craft = auto_craft
 
         self.headers: dict = {
             'user-agent': 'okhttp',
@@ -55,7 +59,7 @@ class ReManga:
             'x-nextjs-data': "1"
         }
 
-        self.user_info = None
+        self.user_info = {}
 
         self.page = 0
         self.ignore_list = {}
@@ -68,7 +72,7 @@ class ReManga:
 
         self.__load_cache() or self.__login(self.username, self.password, self.token)
         self.__update_manga_page_path()
-        logger.success(f'<{self.username or self.user_info.get("username")}: Successful login>')
+        logger.success(f'<{self.username or self.user_info["username"]}: Successful login>')
 
     def __login(self,
                 username: str = None,
@@ -153,9 +157,11 @@ class ReManga:
         response = self.sync_session.req('GET', url=url, headers=self.headers)
         return response.json()
 
+    def __get_endpoint_with_user_id(self, endpoint) -> str:
+        return self.BASE_PATHS[endpoint].format(self.user_info['id'])
+
     async def __get_total_count_bookmarks(self) -> int:
-        api_endpoint = self.BASE_PATHS['count_bookmarks'].format(self.user_info['id'])
-        url = self.BASE_URL + api_endpoint
+        url = self.BASE_URL + self.__get_endpoint_with_user_id('count_bookmarks')
         response = await self.async_session.req('GET', url=url, headers=self.headers)
         count = 0
 
@@ -165,8 +171,7 @@ class ReManga:
 
     async def get_user_bookmarks_for_ignore(self) -> dict:
         bookmark_count = await self.__get_total_count_bookmarks()
-        api_endpoint = self.BASE_PATHS['bookmarks'].format(self.user_info['id'])
-        url = self.BASE_URL + api_endpoint
+        url = self.BASE_URL + self.__get_endpoint_with_user_id('bookmarks')
         querystring = {
             "type": "0",
             "count": f"{bookmark_count}",
@@ -183,7 +188,7 @@ class ReManga:
             self.ignore_list[title_id] = title_dir
         return self.ignore_list
 
-    async def __unpack_catalog(self, content: list):
+    async def __unpack_catalog(self, content: list) -> None:
         for title in content:
             title_id = title.get('id')
             if title_id not in self.ignore_list and title_id not in self.need_to_view_title:
@@ -191,7 +196,70 @@ class ReManga:
                     'dir': title['dir'],
                     'name': title['main_name']
                 }
-        
+
+    @staticmethod
+    def __filter_cards(cards) -> dict:
+        filtered_cards = {}
+        for card in cards:
+            rank = card['rank']
+            title_dir = card['title_dir']
+            card_id = card['id']
+            if rank not in filtered_cards:
+                filtered_cards[rank] = []
+
+            title_dir_found = False
+            for item in filtered_cards[rank]:
+                if title_dir in item:
+                    item[title_dir].append(card_id)
+                    title_dir_found = True
+                    break
+
+            if not title_dir_found:
+                filtered_cards[rank].append({title_dir: [card_id]})
+
+        return filtered_cards
+
+    async def get_all_cards(self):
+        page = 1
+        cards = []
+        total_cards = 0
+        url = self.BASE_URL + self.__get_endpoint_with_user_id('inventory')
+        while True:
+            querystring = {"type": "cards", "page": f"{page}"}
+            response = await self.async_session.req('GET', url=url,
+                                                    headers=self.headers,
+                                                    params=querystring)
+            data = response.json().get('content', [])
+            if data:
+                for card in data:
+                    card_id = card.get('id')
+                    rank = card.get('rank')
+                    title_id = card.get('title', {}).get('id') if card.get('title') else None
+                    title_dir = card.get('title', {}).get('dir') if card.get('title') else None
+                    cards.append({'rank': rank, 'id': card_id, 'title_id': title_id, 'title_dir': title_dir})
+                    total_cards += 1
+                page += 1
+            else:
+                break
+        return cards
+
+    async def merge_cards(self, cards: list[int] = None):
+        payload = {'cards': cards}
+        url = self.BASE_URL + self.__get_endpoint_with_user_id('merge_cards')
+        await self.async_session.req('POST', url=url,
+                                     headers=self.headers,
+                                     data=payload)
+        logger.success(f'{self.username or self.user_info["username"]}: Cards merged!')
+
+    async def auto_craft_cards(self, rank: str = 'rank_f'):
+        cards = self.__filter_cards((await self.get_all_cards()))
+        for titles in cards[rank]:
+            for title_dir, card_ids in titles.items():
+                if len(card_ids) >= 2:
+                    for i in range(0, len(card_ids), 2):
+                        if i + 1 < len(card_ids):
+                            await self.merge_cards(card_ids[i:i + 2])
+
     async def get_catalog(self, order_by: str = 'id') -> dict:
         api_endpoint = self.BASE_PATHS['catalog']
         url = self.BASE_URL + api_endpoint
@@ -281,7 +349,7 @@ class ReManga:
                 self.username = data.get('username')
                 self.password = data.get('password')
                 self.user_info = data.get('user_info')
-                self.viewed_chapters = data.get('viewed')
+                self.viewed_chapters = data.get("viewed")
                 return True
 
     async def __save_viewed(self):
@@ -296,7 +364,7 @@ class ReManga:
                 "headers": self.headers,
                 "user_info": self.user_info,
                 "page": self.page,
-                "viewed'": self.viewed_chapters
+                "viewed": self.viewed_chapters
             }, file)
 
     async def time_to_fun(self):
@@ -306,5 +374,6 @@ class ReManga:
             await self.get_catalog()
             await self.__farm_view()
             await self.__save_viewed()
+            await self.auto_craft_cards() if self.auto_craft else None
             logger.success(f'<{self.username or self.user_info.get("username")}: TIMEBREAK 20 SEC>')
             await asyncio.sleep(20)
